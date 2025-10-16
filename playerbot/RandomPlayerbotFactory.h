@@ -38,6 +38,7 @@ class RandomPlayerbotFactory
         };
 
         static constexpr NameRaceAndGender CombineRaceAndGender(uint8 gender, uint8 race);
+        static constexpr uint8 ExtractGender(NameRaceAndGender raceAndGender);
 
         RandomPlayerbotFactory(uint32 accountId);
 		virtual ~RandomPlayerbotFactory() {}

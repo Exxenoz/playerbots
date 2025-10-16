@@ -48,6 +48,11 @@ constexpr RandomPlayerbotFactory::NameRaceAndGender RandomPlayerbotFactory::Comb
     }
 }
 
+constexpr uint8 RandomPlayerbotFactory::ExtractGender(NameRaceAndGender raceAndGender)
+{
+    return (static_cast<uint8>(raceAndGender) & static_cast<uint8>(NameRaceAndGender::GenericFemale)) == static_cast<uint8>(NameRaceAndGender::GenericFemale) ? GENDER_FEMALE : GENDER_MALE;
+}
+
 RandomPlayerbotFactory::RandomPlayerbotFactory(uint32 accountId) : accountId(accountId)
 {
     availableRaces[CLASS_WARRIOR].push_back(RACE_HUMAN);
@@ -348,7 +353,7 @@ std::string RandomPlayerbotFactory::CreateRandomBotName(NameRaceAndGender raceAn
     Field *fields = result->Fetch();
     uint32 maxId = fields[0].GetUInt32();
 
-    result = CharacterDatabase.PQuery("SELECT n.name FROM ai_playerbot_names n LEFT OUTER JOIN characters e ON e.name = n.name WHERE e.guid IS NULL and n.gender = '%u' order by rand() limit 1", static_cast<uint8>(raceAndGender));
+    result = CharacterDatabase.PQuery("SELECT n.name FROM ai_playerbot_names n LEFT OUTER JOIN characters e ON e.name = n.name WHERE e.guid IS NULL and (n.gender = '%u' or n.gender = '%u') order by n.gender DESC, rand() limit 1", static_cast<uint8>(raceAndGender), uint8(ExtractGender(raceAndGender)));
     if (!result)
     {
         sLog.outError("No more names left for random bots");
@@ -572,107 +577,6 @@ void RandomPlayerbotFactory::CreateRandomBots()
         * 9;
 #endif
 
-    sLog.outString("Loading available names...");
-
-    std::unordered_map<NameRaceAndGender, std::vector<std::string>> freeNames, allNames;
-    std::unordered_map<std::string, bool> used;
-
-    auto result = CharacterDatabase.PQuery("SELECT n.gender, n.name, e.guid FROM ai_playerbot_names n LEFT OUTER JOIN characters e ON e.name = n.name");
-    if (!result)
-    {
-        sLog.outError("No more names left for random bots");
-        return;
-    }
-
-    do
-    {
-        Field* fields = result->Fetch();
-        NameRaceAndGender raceAndGender = static_cast<NameRaceAndGender>(fields[0].GetUInt8());
-        std::string bname = fields[1].GetString();
-        uint32 guidlo = fields[2].GetUInt32();
-        if (!guidlo)
-            freeNames[raceAndGender].push_back(bname);
-        allNames[raceAndGender].push_back(bname);
-        used[bname] = false;
-    } while (result->NextRow());
-
-    if (allNames.count(NameRaceAndGender::DwarfMale) == 0)
-    {
-        sLog.outError("The name database has not been updated. Run ai_playerbot_names.sql to update.");
-
-        auto oldResult = CharacterDatabase.PQuery("SELECT e.name FROM characters e");
-        if (oldResult)
-        {
-            do
-            {
-                Field* fields = oldResult->Fetch();
-                std::string bname = fields[0].GetString();
-                used[bname] = false;
-            } while (oldResult->NextRow());
-        }
-
-        for (uint8 type = 2; type <= static_cast<uint8>(NameRaceAndGender::BloodelfFemale); ++type)
-        {
-            for (auto name : allNames[static_cast<NameRaceAndGender>(type % 2)])
-            {
-                name[0] -= 'A' - 'a';
-                name = GetNamePostFix(type - 2) + name;
-                name[0] += 'A' - 'a';
-                allNames[static_cast<NameRaceAndGender>(type)].push_back(name);
-                if (used.count(name) == 0)
-                {
-                    freeNames[static_cast<NameRaceAndGender>(type)].push_back(name);
-                }
-            }
-        }
-    }
-
-    BarGoLink bar4(static_cast<uint8>(NameRaceAndGender::BloodelfFemale));
-
-    for (uint8 raceAndGenderIndex = 0; raceAndGenderIndex <= static_cast<uint8>(NameRaceAndGender::BloodelfFemale); ++raceAndGenderIndex)
-    {
-        const auto raceAndGender = static_cast<NameRaceAndGender>(raceAndGenderIndex);
-
-        int32 postItt = 0;
-
-        std::vector<std::string> newNames;
-
-        // Dividing by 2, assuming equal distribution across the two factions (very conservative consideration of distribution across all races).
-        // Given that there are 5k names per race and gender, this will trigger for account numbers exceeding 1000.
-        if (totalCharCount / 2 < freeNames[raceAndGender].size())
-            continue;
-        uint32 namesNeeded = totalCharCount / 2 - freeNames[raceAndGender].size();
-
-        while (namesNeeded)
-        {
-            std::string post = GetNamePostFix(postItt);
-
-            for (auto name : allNames[raceAndGender])
-            {
-                if (name.size() + post.size() > 12)
-                    continue;
-
-                std::string newName = name + post;
-                if (used.find(newName) != used.end())
-                    continue;
-
-                used[newName] = false;
-                newNames.push_back(newName);
-                namesNeeded--;
-                if (!namesNeeded)
-                    break;
-            }
-
-            postItt++;
-        }
-
-        bar4.step();
-
-        freeNames[raceAndGender].insert(freeNames[raceAndGender].end(), newNames.begin(), newNames.end());
-    }
-
-    sLog.outString(">> Loaded names for " SIZEFMTD " race/gender combinations.", freeNames.size());
-
     sLog.outString("Creating random bot characters...");
     uint32 botsCreated = 0;
     BarGoLink bar1(totalCharCount);
@@ -746,6 +650,7 @@ void RandomPlayerbotFactory::CreateRandomBots()
 	                continue;
 #endif
 
+                std::unordered_map<NameRaceAndGender, std::vector<std::string>> freeNames;
 	            if (factory.CreateRandomBot(cls, freeNames, race))
 	            {
 	                created++;
@@ -765,6 +670,7 @@ void RandomPlayerbotFactory::CreateRandomBots()
                 if (!((1 << (cls - 1)) & CLASSMASK_ALL_PLAYABLE) || !sChrClassesStore.LookupEntry(cls))
                     continue;
 
+                std::unordered_map<NameRaceAndGender, std::vector<std::string>> freeNames;
 #ifdef MANGOSBOT_TWO
                 if (cls != 10)
 #else
